@@ -1,0 +1,149 @@
+# Установка необходимых библиотек
+!pip install git+https://github.com/WildlifeDatasets/wildlife-datasets@develop
+!pip install git+https://github.com/WildlifeDatasets/wildlife-tools
+!pip install timm torchvision pandas numpy torch
+import os
+import numpy as np
+import pandas as pd
+import timm
+import torchvision.transforms as T
+from wildlife_datasets.datasets import AnimalCLEF2025, WildlifeDataset
+from wildlife_tools.features import DeepFeatures
+from wildlife_tools.similarity import CosineSimilarity
+from itertools import chain
+import torch
+from torch.optim import AdamW
+from wildlife_tools.data import WildlifeDataset
+from wildlife_tools.train import ArcFaceLoss, BasicTrainer
+!wget https://storage.yandexcloud.net/ds-ods/files/files/a49ec917/train.zip
+!wget https://storage.yandexcloud.net/ds-ods/files/files/c42aab3c/test.zip
+!wget https://storage.yandexcloud.net/ds-ods/files/files/2d9be07b/train.csv
+
+!unzip -q train.zip
+!unzip -q test.zip
+import pandas as pd
+# Установка корневой директории
+root = '/content/'
+
+# Чтение метаданных
+metadata = pd.read_csv(root + 'train.csv')
+# Определение трансформаций
+transform = T.Compose([
+    T.RandomResizedCrop(size=(224, 224), scale=(0.8, 1.0)),  # ConvNeXt-XL принимает вход 224x224
+    T.RandAugment(num_ops=2, magnitude=15),
+    T.ToTensor(),
+    T.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),  # Стандартные значения для ImageNet
+])
+# Создание датасета
+dataset = WildlifeDataset(
+    root=root + 'train',
+    metadata=metadata,
+    col_label='label',
+    col_path='file_name',
+    load_label=True,
+    transform=transform
+)
+# Проверка уникальных особей
+unique_identities = dataset.metadata['label'].unique()
+print(f"Количество уникальных особей: {len(unique_identities)}")
+# Проверка доступности GPU
+available_gpus = [torch.cuda.device(i) for i in range(torch.cuda.device_count())]
+print(f"Доступные GPU: {available_gpus}")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Используемое устройство: {device}")
+# Создание модели ConvNeXt-XL
+backbone = timm.create_model(
+    'convnext_xlarge',  # Используем ConvNeXt-XL
+    pretrained=True,    # Загружаем предобученные веса
+    num_classes=0       # Убираем классификационную голову, оставляем только признаки
+)
+# Определение размера эмбеддингов
+with torch.no_grad():
+    dummy_input = torch.randn(1, 3, 224, 224)  # Входной размер для ConvNeXt-XL
+    embedding_size = backbone(dummy_input).shape[1]
+    print(f"Размер эмбеддинга: {embedding_size}")
+
+# Определение ArcFace Loss
+objective = ArcFaceLoss(
+    num_classes=dataset.num_classes,
+    embedding_size=embedding_size,
+    margin=0.5,
+    scale=64
+)
+
+
+# Оптимизатор и шедулер
+params = chain(backbone.parameters(), objective.parameters())
+optimizer = AdamW(params=params, lr=0.001)
+min_lr = optimizer.defaults.get("lr") * 1e-3
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100, eta_min=min_lr)
+
+
+# Настройка обучения
+trainer = BasicTrainer(
+    dataset=dataset,
+    model=backbone,
+    device=device,  # Используем устройство (GPU или CPU)
+    objective=objective,
+    optimizer=optimizer,
+    scheduler=scheduler,
+    batch_size=16,
+    accumulation_steps=8,
+    num_workers=2,
+    epochs=30,
+)
+
+# Запуск обучения
+trainer.train()
+# Сохранение модели после обучения
+model_path = "convnext_xl_model.pth"
+torch.save(backbone.state_dict(), model_path)
+print(f"Модель сохранена в {model_path}")
+
+# (Опционально) Сохранение состояния оптимизатора и ArcFaceLoss
+checkpoint = {
+    'backbone_state_dict': backbone.state_dict(),
+    'objective_state_dict': objective.state_dict(),
+    'optimizer_state_dict': optimizer.state_dict(),
+    'epoch': trainer.epochs  # Сохраняем количество эпох
+}
+checkpoint_path = "convnext_xl_checkpoint.pth"
+torch.save(checkpoint, checkpoint_path)
+print(f"Полный чекпоинт сохранен в {checkpoint_path}")
+# Загрузка модели из файла
+
+# Создание модели с той же архитектурой
+loaded_backbone = timm.create_model(
+    'convnext_xlarge',
+    pretrained=False,  # Не загружаем предобученные веса, так как используем свои
+    num_classes=0
+)
+
+# Загрузка весов модели
+model_path = "convnext_xl_model.pth"
+loaded_backbone.load_state_dict(torch.load(model_path))
+loaded_backbone.eval()  # Переводим в режим оценки
+print(f"Модель загружена из {model_path}")
+
+# (Опционально) Загрузка полного чекпоинта
+checkpoint_path = "convnext_xl_checkpoint.pth"
+checkpoint = torch.load(checkpoint_path)
+
+# Восстановление backbone
+loaded_backbone.load_state_dict(checkpoint['backbone_state_dict'])
+loaded_backbone.eval()
+
+# Восстановление ArcFaceLoss
+loaded_objective = ArcFaceLoss(
+    num_classes=dataset.num_classes,
+    embedding_size=embedding_size,
+    margin=0.5,
+    scale=64
+)
+loaded_objective.load_state_dict(checkpoint['objective_state_dict'])
+
+# Восстановление оптимизатора
+loaded_optimizer = AdamW(params=chain(loaded_backbone.parameters(), loaded_objective.parameters()), lr=0.001)
+loaded_optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+print(f"Чекпоинт загружен из {checkpoint_path}, эпоха: {checkpoint['epoch']}")
