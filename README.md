@@ -21,7 +21,7 @@
 
 pip install -r requirements.txt
 
-python train.py
+запуск файла python с кодом или ноутбука ipynb.
 
 📊 Метрики (baseline)
 
@@ -30,10 +30,15 @@ python train.py
  • Визуальное распознавание полос: сильно индивидуально
 
 📁 Структура, которая имелась в этом соревновании
+
 ├── data/                # train/val images
+
 ├── models/              # weights after training
+
 ├── train.py             # training loop
+
 ├── infer.py             # prediction script
+
 └── requirements.txt     # dependencies
 
 💡 Примечание
