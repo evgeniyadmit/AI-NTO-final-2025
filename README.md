@@ -48,3 +48,5 @@ pip install -r requirements.txt
 
 Это лёгкий стартовый бейзлайн, цель — удобная адаптация под кастомные данные и эксперименты с augmentations, head-слоями и loss-функциями для улучшения Recall/Accuracy.
 
+Inference script is not included, as it may be restricted by competition rules.
+To participate or reproduce results, you should build your own inference.py based on the competition format and ensure that outputs match the required submission schema.
